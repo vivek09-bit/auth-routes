@@ -20,12 +20,6 @@ export const sendEmail = async (to, subject, htmlContent) => {
             throw new Error("Invalid or missing BREVO_API_KEY");
         }
 
-        // Set API key here (dotenv is guaranteed to be loaded at call time)
-        apiInstance.setApiKey(
-            TransactionalEmailsApiApiKeys.apiKey,
-            process.env.BREVO_API_KEY
-        );
-
         // Parse sender from env
         const senderRaw =
             process.env.EMAIL_FROM || "noreply-Igniteverse<no-reply@igniteverse.in>";
