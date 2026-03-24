@@ -1,0 +1,328 @@
+import express from "express";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { body, validationResult } from "express-validator";
+import { User, Test } from "../models/Structure.js";
+import verifyToken from "../middleware/verifyToken.js";
+import { v4 as uuidv4 } from "uuid";
+import { startTest, submitTest } from "../controllers/testController.js";
+import authMiddleware from "../middleware/authMiddleware.js";
+import crypto from 'crypto';
+// const nodemailer = require('nodemailer'); // Removed
+import { sendEmail } from '../utils/emailService.js';
+import { welcomeEmailTemplate, resetPasswordTemplate, passwordChangeSuccessTemplate } from '../utils/emailTemplates.js';
+
+
+const router = express.Router();
+
+// Helper function to handle errors
+const handleError = (res, statusCode, message, error = null) => {
+  // if (error) console.error(error);
+  return res.status(statusCode).json({ success: false, message });
+};
+
+
+// =========================== REGISTER ===========================
+
+
+router.post("/register", async (req, res) => {
+  try {
+    let { name, username, email, password, phone } = req.body;
+
+    // Trim and normalize input
+    name = name?.trim();
+    username = username?.trim().toLowerCase();
+    email = email?.trim().toLowerCase();
+    phone = phone?.trim();
+
+    // 1. Verify the Email Token first (Security Check)
+    const { verificationToken } = req.body;
+    if (!verificationToken) {
+      return res.status(403).json({ message: "Email verification required before registration." });
+    }
+
+    try {
+      const decoded = jwt.verify(verificationToken, process.env.JWT_SECRET);
+      if (decoded.email !== email || !decoded.verified) {
+        return res.status(403).json({ message: "Invalid verification token for this email." });
+      }
+      // Valid token! Proceed with registration.
+    } catch (err) {
+      return res.status(403).json({ message: "Invalid or expired verification token." });
+    }
+
+    // Input validation
+    if (!name || !username || !email || !password || !phone) {
+      return res.status(400).json({ message: "All fields are required." });
+    }
+
+    if (username.length < 3 || username.length > 20) {
+      return res.status(400).json({ message: "Username must be 3–20 characters." });
+    }
+
+    // Email validation (redundant if verified, but good for format check)
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ message: "Invalid email format." });
+    }
+
+    const phoneRegex = /^[0-9]{10}$/;
+    if (!phoneRegex.test(phone)) {
+      return res.status(400).json({ message: "Phone number must be 10 digits." });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters long." });
+    }
+
+    // Check if user exists
+    const existingUser = await User.findOne({ $or: [{ username }, { email }] });
+    if (existingUser) {
+      const conflictField = existingUser.email === email ? "Email" : "Username";
+      return res.status(409).json({ message: `${conflictField} already in use.` });
+    }
+
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Generate userID and profileURL
+    const userID = uuidv4();
+    const profileURL = `${process.env.FRONTEND_URL}/profile/${username}`;
+
+    // Save user
+    const newUser = new User({
+      name,
+      username,
+      email,
+      password: hashedPassword,
+      phone,
+      userID,
+      profileURL,
+    });
+
+    await newUser.save();
+
+    // Send welcome email (best-effort; do not block registration on email failures)
+    sendWelcomeEmail(newUser.email, newUser.username, newUser.name).catch(err => {
+      console.error('Welcome email error:', err);
+    });
+
+    res.status(201).json({
+      message: "User registered successfully.",
+      profileURL,
+      username,
+    });
+
+  } catch (error) {
+    console.error("Registration error:", error.message);
+    res.status(500).json({
+      message: "Server error. Please try again later.",
+      error: error.message,
+    });
+  }
+});
+
+
+
+
+// =========================== LOGIN ===========================
+router.post("/login", async (req, res) => {
+  try {
+    console.log("Login request body:", req.body); // Debugging log
+    const { emailOrUsername, password } = req.body;
+
+    const user = await User.findOne({
+      $or: [{ email: emailOrUsername }, { username: emailOrUsername }]
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: "Invalid username/email or password" });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Invalid username/email or password", error: error.message });
+    }
+
+    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+
+    // console.log("Generated Token:", token); // Debugging log
+
+    res.status(200).json({
+      token,
+      user: {
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        phone: user.phone,
+        profileURL: user.profileURL,
+      },
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ message: "Server error. Please try again later." });
+  }
+});
+
+// =========================== PROFILE ===========================
+router.get("/profile", verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select("-password");
+    if (!user) {
+      return handleError(res, 404, "User not found");
+    }
+    res.status(200).json({ success: true, user });
+  } catch (error) {
+    handleError(res, 500, "Server error", error);
+  }
+});
+
+
+//============================Profile/ID===========================
+router.get("/profile/:username", async (req, res) => {
+  try {
+    const { username } = req.params;
+
+    // Find user by username (exclude password)
+    const user = await User.findOne({ username }).select("-password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.status(200).json(user);
+  } catch (error) {
+    // console.error("Error fetching user profile:", error);
+    res.status(500).json({ message: "Server error. Please try again later." });
+  }
+});
+
+
+
+
+// =========================== MOCK TEST ===========================
+router.get("/mocktest/:testId", async (req, res) => {
+  const { testId } = req.params;
+
+  try {
+    const test = await Test.findOne({ _id: testId });
+    if (!test) {
+      return res.status(404).json({ success: false, message: "Test not found" });
+    }
+
+    res.status(200).json({ success: true, test });
+  } catch (error) {
+    // console.error(error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// =========================== QUIZ QUESTIONS ===========================
+
+// Get all questions for a specific test
+router.get("/quiz/questions", async (req, res) => {
+  try {
+    const questions = await Test.find();
+    if (!questions) {
+      return res.status(404).json({ success: false, message: "No questions found" });
+    }
+    res.status(200).json({ success: true, questions });
+  } catch (error) {
+    // console.error("Error fetching questions:", error);
+    res.status(500).json({ success: false, message: "Server error. Please try again later." });
+  }
+});
+
+
+
+
+router.get("/me", authMiddleware, async (req, res) => {
+  try {
+    const token = req.header("Authorization")?.split(" ")[1]?.trim();
+    // console.log(`My token ${token}`);
+    res.json({ message: "Authenticated user", user: req.user });
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+export default router;
+
+// =========================== FORGOT / RESET PASSWORD ===========================
+// Helper to send reset email
+const sendResetEmail = async (toEmail, resetLink) => {
+  await sendEmail(
+    toEmail,
+    'Password reset request - Ignite Verse',
+    resetPasswordTemplate(resetLink)
+  );
+};
+
+// Helper to send welcome email after registration
+const sendWelcomeEmail = async (toEmail, username, name) => {
+  await sendEmail(
+    toEmail,
+    'Welcome to Ignite Verse! 🚀',
+    welcomeEmailTemplate(name, username)
+  );
+};
+
+// POST /api/auth/forgot-password
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email is required.' });
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) {
+      // Do not reveal whether the email exists
+      return res.status(200).json({ message: 'If the email exists, a reset link has been sent.' });
+    }
+
+    // Generate token
+    const token = crypto.randomBytes(32).toString('hex');
+    user.resetPasswordToken = token;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    const frontend = process.env.FRONTEND_URL;
+    const resetLink = `${frontend}/reset-password/${token}`;
+
+    await sendResetEmail(user.email, resetLink);
+
+    res.status(200).json({ message: 'If the email exists, a reset link has been sent.' });
+  } catch (err) {
+    console.error('Forgot password error:', err.json ? err.json() : err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
+
+// POST /api/auth/reset-password/:token
+router.post('/reset-password/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ message: 'Password is required.' });
+
+    const user = await User.findOne({ resetPasswordToken: token, resetPasswordExpires: { $gt: Date.now() } });
+    if (!user) return res.status(400).json({ message: 'Invalid or expired token.' });
+
+    const hashed = await bcrypt.hash(password, 10);
+    user.password = hashed;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
+    // Send confirmation email
+    await sendEmail(
+      user.email,
+      "Password Changed Successfully - Ignite Verse",
+      passwordChangeSuccessTemplate(user.name || user.username)
+    );
+
+    res.status(200).json({ message: 'Password has been reset successfully.' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ message: 'Server error. Please try again later.' });
+  }
+});
