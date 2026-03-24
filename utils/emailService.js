@@ -1,4 +1,4 @@
-import { TransactionalEmailsApi, TransactionalEmailsApiApiKeys } from "@getbrevo/brevo";
+import { TransactionalEmailsApi, TransactionalEmailsApiApiKeys, SendSmtpEmail } from "@getbrevo/brevo";
 
 /**
  * Send email using Brevo HTTP API (works on Render)
@@ -20,6 +20,12 @@ export const sendEmail = async (to, subject, htmlContent) => {
             throw new Error("Invalid or missing BREVO_API_KEY");
         }
 
+        // Set API key here (dotenv is guaranteed to be loaded at call time)
+        apiInstance.setApiKey(
+            TransactionalEmailsApiApiKeys.apiKey,
+            process.env.BREVO_API_KEY
+        );
+
         // Parse sender from env
         const senderRaw =
             process.env.EMAIL_FROM || "noreply-Igniteverse<no-reply@igniteverse.in>";
@@ -35,7 +41,7 @@ export const sendEmail = async (to, subject, htmlContent) => {
             senderEmail = senderRaw.trim();
         }
 
-        const emailData = new Brevo.SendSmtpEmail();
+        const emailData = new SendSmtpEmail();
 
         emailData.subject = subject;
         emailData.htmlContent = htmlContent;

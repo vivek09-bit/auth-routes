@@ -199,40 +199,6 @@ router.get("/profile/:username", async (req, res) => {
 
 
 
-// =========================== MOCK TEST ===========================
-router.get("/mocktest/:testId", async (req, res) => {
-  const { testId } = req.params;
-
-  try {
-    const test = await Test.findOne({ _id: testId });
-    if (!test) {
-      return res.status(404).json({ success: false, message: "Test not found" });
-    }
-
-    res.status(200).json({ success: true, test });
-  } catch (error) {
-    // console.error(error);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-// =========================== QUIZ QUESTIONS ===========================
-
-// Get all questions for a specific test
-router.get("/quiz/questions", async (req, res) => {
-  try {
-    const questions = await Test.find();
-    if (!questions) {
-      return res.status(404).json({ success: false, message: "No questions found" });
-    }
-    res.status(200).json({ success: true, questions });
-  } catch (error) {
-    // console.error("Error fetching questions:", error);
-    res.status(500).json({ success: false, message: "Server error. Please try again later." });
-  }
-});
-
-
 
 
 router.get("/me", authMiddleware, async (req, res) => {
